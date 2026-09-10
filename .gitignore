@@ -1,0 +1,10 @@
+# Build output
+lib/
+
+# Preview tooling output
+.tmp/
+preview/main.js
+preview/main.js.map
+
+# Local installs
+node_modules/

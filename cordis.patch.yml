@@ -1,0 +1,20 @@
+# dsh-workflow-view bundle patch
+#
+# This file is the `dsh.bundle.patch` layer of the package. When the plugin is
+# installed through the official CLI —
+#
+#   dsh plugin --profile web add dsh-workflow-view
+#
+# — the command reconciles `dsh.profile.bundles` against the installed packages
+# and, seeing this declaration, appends `dsh-workflow-view` to the bundle stack.
+# The profile boot then merges THIS patch (a single `insert` of the plugin row).
+# No profile file edits are needed: one command installs and mounts.
+#
+# The row mounts the package's Node half (`lib/index.js`). That half is
+# deliberately inert: it exists because the client module system discovers
+# browser bundles by scanning the host Loader's entries for packages declaring
+# `dsh.client` — an unmounted package never reaches the browser. All behaviour
+# lives in `lib/client.js`, which registers one extra `conversation.view` entry.
+- insert:
+    - id: workflow-view
+      name: 'dsh-workflow-view'
