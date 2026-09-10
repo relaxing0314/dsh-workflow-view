@@ -1,6 +1,6 @@
 {
   "name": "dsh-workflow-view",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH Web UI plugin: a 工作流 (Workflow) conversation tab that turns one Session's recorded events into per-turn execution chains — model requests (system / messages[] / tools), model responses (reasoning, content, tool calls), tool executions, and token/cache accounting.",
   "type": "module",
   "license": "MIT",

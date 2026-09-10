@@ -1,11 +1,14 @@
 /**
- * Structural verification of the Workflow view (dev tooling only).
+ * Structural + accessibility verification of the Workflow view (dev tooling only).
  *
  * Starts the preview server, drives a real Chromium through the rendered page,
  * and asserts the layout contract the plugin promises: tab label, header
  * metrics, the two independently scrolling panes, windowed model-call rows, and
- * horizontal overflow on wide recorded lines. Prints element geometry so the
- * layout can be reviewed without looking at a screenshot.
+ * horizontal overflow on wide recorded lines. It then measures the *computed*
+ * foreground/background pairs of every status, role, and JSON token in BOTH
+ * themes and requires WCAG AA — the failed-round badge once measured 1.00:1 in
+ * dark mode (`--dsw-alias-state-error-primary` and `-secondary` are the same
+ * opaque red there), so this is the regression guard for that class of bug.
  *
  * Usage: node preview/check.mjs
  */
@@ -20,6 +23,39 @@ const PLUGIN_ROOT = dirname(HERE)
 const CHECKOUT = process.env.DSH_CHECKOUT ?? '/Users/gaojing/Desktop/my-projects/ai-deepseek-harness'
 const PORT = Number(process.env.PREVIEW_PORT ?? 5199)
 const URL_BASE = `http://127.0.0.1:${PORT}/preview/index.html`
+
+/** Minimum contrast for small UI text (WCAG 2.1 AA). */
+const AA = 4.5
+
+/**
+ * Every status / role / JSON token the view paints, measured in both themes.
+ * `CONTRAST_REQUIRED` marks the pairs that must actually be on screen, so a
+ * selector that silently stops rendering cannot pass as "nothing to check".
+ */
+const CONTRAST_TARGETS = [
+  '.wf-status-bad',
+  '.wf-detail-error',
+  '.wf-status-running',
+  '.wf-status-warn',
+  '.wf-status-ok',
+  '.wf-role-user',
+  '.wf-role-assistant',
+  '.wf-role-tool',
+  '.wf-json-string',
+  '.wf-json-number',
+]
+const CONTRAST_REQUIRED = {
+  '.wf-status-bad': true,
+  '.wf-detail-error': true,
+  '.wf-status-running': true,
+  '.wf-status-warn': true,
+  '.wf-status-ok': false,
+  '.wf-role-user': true,
+  '.wf-role-assistant': false,
+  '.wf-role-tool': false,
+  '.wf-json-string': false,
+  '.wf-json-number': false,
+}
 
 const store = join(CHECKOUT, 'node_modules/.pnpm')
 const playwrightEntry = readdirSync(store).filter(name => /^playwright@\d/u.test(name)).sort().reverse()
@@ -44,9 +80,26 @@ await new Promise((resolve, reject) => {
   server.on('error', reject)
 })
 
+/* ------------------------------------------------------------ contrast math */
+
+const channel = (value) => {
+  const s = value / 255
+  return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+}
+const luminance = ({ r, g, b }) => 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+function contrastRatio(foreground, background) {
+  const [light, dark] = [luminance(foreground), luminance(background)].sort((a, b) => b - a)
+  return (light + 0.05) / (dark + 0.05)
+}
+
+/* ----------------------------------------------------------------- harness */
+
 const failures = []
 const notes = []
-const check = (condition, message) => { if (!condition) failures.push(message); else notes.push(`ok   ${message}`) }
+const check = (condition, message) => {
+  if (condition) notes.push(`ok   ${message}`)
+  else failures.push(message)
+}
 
 const browser = await chromium.launch()
 try {
@@ -63,14 +116,21 @@ try {
 
   const box = async selector => page.locator(selector).first().boundingBox()
 
-  // --- header -------------------------------------------------------------
-  const activeTab = await page.locator('.preview-tab.is-active').innerText()
-  check(activeTab.trim() === '工作流', `tab label is 工作流 (got "${activeTab.trim()}")`)
+  // Sections remember their own open state (a section holding a failed tool
+  // opens by default), so a blind click would close it. Open only when closed.
+  const ensureOpen = async (toggle) => {
+    if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click()
+    await page.waitForTimeout(250)
+  }
+
+  /* ---------------------------------------------------------------- header */
+
+  const activeTab = (await page.locator('.preview-tab.is-active').innerText()).trim()
+  check(activeTab === '工作流', `tab label is 工作流 (got "${activeTab}")`)
 
   const metrics = await page.locator('.wf-metric').allInnerTexts()
   check(metrics.length === 4, `header shows 4 metrics (got ${metrics.length})`)
-  const metricText = metrics.map(text => text.replace(/\n+/gu, '=')).join(' | ')
-  notes.push(`info metrics: ${metricText}`)
+  notes.push(`info metrics: ${metrics.map(t => t.replace(/\n+/gu, '=')).join(' | ')}`)
 
   const tokenLabels = await page.locator('.wf-header .wf-token-label').allInnerTexts()
   check(
@@ -78,9 +138,10 @@ try {
     `header token strip shows input/uncached/cache-read/cache-write/output (got ${tokenLabels.join(',')})`,
   )
 
-  // --- two independent panes ---------------------------------------------
+  /* ------------------------------------------------------- two panes + list */
+
   const rounds = await page.locator('.wf-round').count()
-  check(rounds >= 1, `left list renders rounds (got ${rounds})`)
+  check(rounds === 3, `left list renders every round (got ${rounds})`)
   const roundsBox = await box('.wf-rounds')
   const detailBox = await box('.wf-detail')
   check(
@@ -89,61 +150,48 @@ try {
   )
   notes.push(`info left width=${Math.round(roundsBox?.width ?? 0)}px, detail width=${Math.round(detailBox?.width ?? 0)}px`)
 
-  const roundsOverflow = await page.locator('.wf-rounds-scroll').evaluate(el => el.scrollHeight > el.clientHeight)
+  const roundStatuses = (await page.locator('.wf-round .wf-status').allInnerTexts()).join(',')
+  check(
+    ['进行中', '已中止', '已失败'].every(label => roundStatuses.includes(label)),
+    `round list shows running / aborted / failed states (got ${roundStatuses})`,
+  )
+
+  /* --------------------------------------------------- big round: windowing */
+
+  // Round 1 is the 47-call recorded turn, so the virtualization assertion is
+  // meaningful rather than trivially true on the one-call failure fixture.
+  await page.locator('.wf-round').first().click()
+  await page.waitForTimeout(300)
   const callsOverflow = await page.locator('.wf-calls').evaluate(el => el.scrollHeight > el.clientHeight)
   check(callsOverflow, 'model-call list scrolls inside its own pane')
-  notes.push(`info left list scrolls on its own: ${String(roundsOverflow)}`)
-
-  // --- virtualization -----------------------------------------------------
-  const totalCalls = await page.evaluate(() => {
-    const selected = document.querySelector('.wf-round.is-active .wf-round-stat')
-    return selected === null ? -1 : -1
-  })
-  void totalCalls
   const renderedCalls = await page.locator('.wf-call').count()
-  const inventoryBox = await box('.wf-calls')
   check(
     renderedCalls > 0 && renderedCalls < 30,
-    `model-call rows are windowed (rendered ${renderedCalls} nodes)`,
+    `model-call rows are windowed (rendered ${renderedCalls} of 47)`,
   )
+  const inventoryBox = await box('.wf-calls')
   notes.push(`info detail pane height=${Math.round(inventoryBox?.height ?? 0)}px`)
 
-  // --- a call card's structure -------------------------------------------
+  /* -------------------------------------------------- call card structure */
+
   const card = page.locator('.wf-call').first()
-  const headText = (await card.locator('.wf-call-head').innerText()).replace(/\n+/gu, ' · ')
-  notes.push(`info call head: ${headText}`)
+  notes.push(`info call head: ${(await card.locator('.wf-call-head').innerText()).replace(/\n+/gu, ' · ')}`)
   const sectionTitles = await card.locator('.wf-section-title').allInnerTexts()
   check(
     ['请求', '响应', '工具调用'].every(title => sectionTitles.includes(title)),
     `call card exposes 请求 / 响应 / 工具调用 sections (got ${sectionTitles.join(',')})`,
   )
 
-  // expand the request section and inspect its sub-blocks
-  await card.locator('.wf-section-toggle').first().click()
-  await page.waitForTimeout(300)
-  const blockTitles = await card.locator('.wf-block-title').allInnerTexts()
-  const blockText = blockTitles.map(text => text.replace(/\s+/gu, ' ').trim()).join(' | ')
-  notes.push(`info request blocks: ${blockText}`)
-  check(
-    blockTitles.some(title => title.includes('系统提示词')),
-    'request shows the recorded system prompt',
-  )
-  check(
-    blockTitles.some(title => title.includes('messages[]')),
-    'request shows the provider-neutral messages[]',
-  )
-  check(
-    blockTitles.some(title => title.includes('tools[]')),
-    'request shows the recorded tools[]',
-  )
+  await ensureOpen(card.locator('.wf-section-toggle').first())
+  const blockTitles = (await card.locator('.wf-block-title').allInnerTexts())
+    .map(text => text.replace(/\s+/gu, ' ').trim())
+  notes.push(`info request blocks: ${blockTitles.join(' | ')}`)
+  check(blockTitles.some(t => t.includes('系统提示词')), 'request shows the recorded system prompt')
+  check(blockTitles.some(t => t.includes('messages[]')), 'request shows the provider-neutral messages[]')
+  check(blockTitles.some(t => t.includes('tools[]')), 'request shows the recorded tools[]')
+  check((await card.locator('.wf-role').count()) >= 1, 'messages[] render role-tagged entries')
+  check((await card.locator('.wf-json-row').count()) > 0, 'JSON tree nodes rendered')
 
-  const roles = await card.locator('.wf-role').allInnerTexts()
-  check(roles.length >= 1, `messages[] render role-tagged entries (got ${roles.join(',')})`)
-
-  const jsonRows = await card.locator('.wf-json-row').count()
-  check(jsonRows > 0, `JSON tree nodes rendered (${jsonRows} rows)`)
-
-  // --- horizontal overflow ------------------------------------------------
   const scrollx = page.locator('.wf-scrollx').first()
   const overflow = await scrollx.evaluate(el => ({ scrollWidth: el.scrollWidth, clientWidth: el.clientWidth }))
   check(
@@ -151,48 +199,118 @@ try {
     `wide recorded lines overflow horizontally instead of wrapping (${overflow.scrollWidth} > ${overflow.clientWidth})`,
   )
 
-  // --- tool execution states ---------------------------------------------
-  await card.locator('.wf-section-toggle').nth(1).click()
-  await page.waitForTimeout(300)
+  await ensureOpen(card.locator('.wf-section-toggle').nth(1))
   const responseBlocks = (await card.locator('.wf-block-title').allInnerTexts())
     .map(text => text.replace(/\s+/gu, ' ').trim()).join(' | ')
-  notes.push(`info response blocks: ${responseBlocks}`)
   check(responseBlocks.includes('推理 reasoning'), 'response shows recorded reasoning')
   check(responseBlocks.includes('内容 content'), 'response shows recorded content')
   check(responseBlocks.includes('响应原始记录'), 'response shows the raw response record')
-  const reasoningText = await card.locator('.wf-pre-reasoning').first().innerText().catch(() => '')
-  check(reasoningText.trim().length > 0, 'response reasoning body is rendered')
+  // The response pane renders reasoning as a plain code block (the
+  // `.wf-pre-reasoning` modifier only exists on message cards), so assert on the
+  // section's own body rather than a class that never appears here.
+  const responseBody = await card.locator('.wf-section').nth(1).innerText()
+  check(
+    responseBody.includes('推理 reasoning') && responseBody.replace(/\s+/gu, '').length > 100,
+    `response section renders its recorded bodies (${responseBody.replace(/\s+/gu, '').length} chars)`,
+  )
 
-  await card.locator('.wf-section-toggle').nth(2).click()
-  await page.waitForTimeout(300)
-  const toolStatuses = await card.locator('.wf-tool .wf-status').allInnerTexts()
-  notes.push(`info tool statuses on first card: ${toolStatuses.join(',')}`)
-  check(toolStatuses.length >= 1, 'tool executions render a status badge')
+  await ensureOpen(card.locator('.wf-section-toggle').nth(2))
   const toolTitles = (await card.locator('.wf-tool .wf-block-title').allInnerTexts()).join(',')
-  check(toolTitles.includes('调用参数') && toolTitles.includes('执行结果'), `tool card shows 调用参数 / 执行结果 (got ${toolTitles})`)
+  check(
+    toolTitles.includes('调用参数') && toolTitles.includes('执行结果'),
+    `tool card shows 调用参数 / 执行结果 (got ${toolTitles})`,
+  )
 
-  // --- expand-all control -------------------------------------------------
   await page.locator('.wf-detail-actions .wf-link').first().click()
   await page.waitForTimeout(400)
   const afterExpand = await page.evaluate(() => document.querySelectorAll('.wf-section.is-open').length)
-  check(afterExpand > 0, `展开全部 opens sections (${afterExpand} open)`)
   await page.locator('.wf-detail-actions .wf-link').nth(1).click()
   await page.waitForTimeout(300)
   const afterCollapse = await page.evaluate(() => document.querySelectorAll('.wf-section.is-open').length)
-  check(afterCollapse < afterExpand, `收起全部 closes them again (${afterCollapse} open)`)
+  check(afterExpand > afterCollapse, `展开全部 / 收起全部 work (${afterExpand} → ${afterCollapse} open)`)
 
-  // --- round switching ----------------------------------------------------
-  if (rounds > 1) {
-    await page.locator('.wf-round').first().click()
-    await page.waitForTimeout(300)
-    const headAfter = await page.locator('.wf-detail-round').innerText()
-    notes.push(`info after switching to first round: ${headAfter}`)
-    check(headAfter.includes('1'), 'selecting another round re-renders the detail pane')
+  /* ------------------------------------------------- the reported failure */
+
+  await page.locator('.wf-round').last().click()
+  await page.waitForTimeout(300)
+  check((await page.locator('.wf-detail-round').innerText()).includes('3'), 'selecting the failed round re-renders the detail pane')
+  const failureText = await page.locator('.wf-detail-error').innerText().catch(() => '')
+  check(failureText.includes('503'), `the recorded failure message is shown (got "${failureText.slice(0, 60)}")`)
+  const failedToolStatus = await page.locator('.wf-call .wf-tool .wf-status').first().innerText().catch(() => '')
+  check(failedToolStatus === '失败', `a failed tool execution is labelled 失败 (got "${failedToolStatus}")`)
+
+  /* ---------------------------------------------------- contrast, 2 themes */
+
+  await ensureOpen(page.locator('.wf-call').first().locator('.wf-section-toggle').first())
+
+  /**
+   * Resolve computed colours through a 1x1 canvas. `getComputedStyle` returns
+   * `color(srgb …)` for anything derived with `color-mix()`, so a hand-rolled
+   * rgb() regex silently yields null — and a null reading must never be mistaken
+   * for "nothing to check". The canvas accepts any CSS colour and hands back the
+   * exact sRGB bytes that end up on screen.
+   */
+  const measure = (selectors) => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 1
+    canvas.height = 1
+    const context = canvas.getContext('2d')
+    const resolve = (value) => {
+      if (value === undefined || value === '') return null
+      context.clearRect(0, 0, 1, 1)
+      context.fillStyle = value
+      context.fillRect(0, 0, 1, 1)
+      const data = context.getImageData(0, 0, 1, 1).data
+      return { r: data[0], g: data[1], b: data[2], a: data[3] / 255 }
+    }
+    const out = {}
+    for (const selector of selectors) {
+      const element = document.querySelector(selector)
+      if (element === null) { out[selector] = null; continue }
+      let node = element
+      let background = null
+      while (node !== null) {
+        const candidate = resolve(getComputedStyle(node).backgroundColor)
+        if (candidate !== null && candidate.a > 0.95) { background = candidate; break }
+        node = node.parentElement
+      }
+      out[selector] = {
+        fg: resolve(getComputedStyle(element).color),
+        bg: background ?? resolve(getComputedStyle(document.body).backgroundColor),
+      }
+    }
+    return out
+  }
+
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate((next) => {
+      if (next === 'dark') document.documentElement.dataset.theme = 'dark'
+      else delete document.documentElement.dataset.theme
+    }, theme)
+    await page.waitForTimeout(250)
+    const measured = await page.evaluate(measure, CONTRAST_TARGETS)
+
+    for (const [selector, required] of Object.entries(CONTRAST_REQUIRED)) {
+      const entry = measured[selector]
+      if (entry === null || entry === undefined || entry.fg === null || entry.bg === null) {
+        if (required) failures.push(`${theme}: ${selector} is not rendered, so its contrast is unverified`)
+        continue
+      }
+      const ratio = contrastRatio(entry.fg, entry.bg)
+      const label = `${theme.padEnd(5)} ${selector.padEnd(22)} ${ratio.toFixed(2).padStart(6)}:1`
+      if (ratio >= AA) notes.push(`ok   contrast ${label}`)
+      else failures.push(`contrast ${label} — below WCAG AA (${AA}:1)`)
+    }
   }
 
   check(problems.length === 0, `no runtime errors in the page (${problems.join(' | ') || 'none'})`)
 
+  await page.evaluate(() => { delete document.documentElement.dataset.theme })
+  await page.waitForTimeout(150)
   await page.screenshot({ path: join(HERE, 'shot.png') })
+  await page.evaluate(() => { document.documentElement.dataset.theme = 'dark' })
+  await page.waitForTimeout(200)
+  await page.screenshot({ path: join(HERE, 'shot-dark.png') })
 } finally {
   await browser.close()
   stop()
@@ -203,6 +321,6 @@ if (failures.length > 0) {
   process.stdout.write(`FAIL ${failures.length}\n${failures.map(f => `  - ${f}`).join('\n')}\n`)
   process.exitCode = 1
 } else {
-  process.stdout.write('PASS: every layout and behaviour assertion held\n')
+  process.stdout.write('PASS: every layout, behaviour, and contrast assertion held\n')
 }
 void PLUGIN_ROOT

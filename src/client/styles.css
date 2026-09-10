@@ -4,11 +4,39 @@
  * Colours come from the DSH theme aliases so the tab follows light/dark and any
  * user theme without the plugin overriding a single token. The only structural
  * contract with the host is that the view is handed a full-height box; every
- * scroll region below owns its own overflow so the round list and the model-call
+ * scroll region below owns its own scrollbar so the round list and the model-call
  * list move independently.
  */
 
 .wf-root {
+  /*
+   * Derived status colours — never use `state-*-primary` / `state-*-secondary` raw.
+   *
+   * Those two tokens are not a text/background pair; they are two *opaque
+   * saturated* hues. In the dark theme the error pair collapses to the same
+   * value (`--dsw-alias-state-error-primary` and `--dsw-alias-state-error-secondary`
+   * are both rgb(242,90,90)), so a badge drawn as "primary text on secondary
+   * background" measured 1.00:1 — the label was literally invisible. The light
+   * theme was barely better (1.37:1).
+   *
+   * Blending each hue toward the theme's own primary label colour keeps the hue
+   * recognisable while clearing WCAG AA in both themes (worst case here is
+   * 4.97:1, versus 1.00–2.18:1 for the raw tokens). The background blends the
+   * same hue into the panel colour, so it stays a tint rather than a second
+   * saturated fill. `preview/check.mjs` measures these ratios in a real browser
+   * for both themes so the regression cannot come back.
+   */
+  --wf-ok-fg: color-mix(in srgb, var(--dsw-alias-state-success-primary) 55%, var(--dsw-alias-label-primary));
+  --wf-ok-bg: color-mix(in srgb, var(--dsw-alias-state-success-primary) 14%, var(--dsw-alias-bg-layer-1));
+  --wf-warn-fg: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 55%, var(--dsw-alias-label-primary));
+  --wf-warn-bg: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 14%, var(--dsw-alias-bg-layer-1));
+  --wf-bad-fg: color-mix(in srgb, var(--dsw-alias-state-error-primary) 55%, var(--dsw-alias-label-primary));
+  --wf-bad-bg: color-mix(in srgb, var(--dsw-alias-state-error-primary) 14%, var(--dsw-alias-bg-layer-1));
+  --wf-bad-bg-strong: color-mix(in srgb, var(--dsw-alias-state-error-primary) 20%, var(--dsw-alias-bg-layer-1));
+  --wf-biz-fg: color-mix(in srgb, var(--dsw-alias-state-business-primary) 55%, var(--dsw-alias-label-primary));
+  --wf-biz-bg: color-mix(in srgb, var(--dsw-alias-state-business-primary) 14%, var(--dsw-alias-bg-layer-1));
+  --wf-biz-bg-strong: color-mix(in srgb, var(--dsw-alias-state-business-primary) 20%, var(--dsw-alias-bg-layer-1));
+
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -194,8 +222,8 @@
 }
 
 .wf-round.is-active .wf-round-index {
-  background: var(--dsw-alias-state-business-primary);
-  color: #fff;
+  background: var(--wf-biz-bg-strong);
+  color: var(--wf-biz-fg);
 }
 
 .wf-round-summary {
@@ -300,8 +328,11 @@
   margin-top: 6px;
   padding: 5px 8px;
   border-radius: 6px;
-  background: var(--dsw-alias-state-error-secondary);
-  color: var(--dsw-alias-state-error-primary);
+  /* A failure callout earns a stronger tint than a status chip, plus a solid
+     accent edge so it reads as an error without relying on colour alone. */
+  background: var(--wf-bad-bg-strong);
+  border-left: 3px solid var(--dsw-alias-state-error-primary);
+  color: var(--wf-bad-fg);
   font-size: 11px;
   white-space: pre-wrap;
 }
@@ -395,23 +426,23 @@
 }
 
 .wf-status-ok {
-  background: var(--dsw-alias-state-success-tertiary);
-  color: var(--dsw-alias-state-success-primary);
+  background: var(--wf-ok-bg);
+  color: var(--wf-ok-fg);
 }
 
 .wf-status-running {
-  background: var(--dsw-alias-state-business-tertiary, var(--dsw-alias-interactive-bg-hover));
-  color: var(--dsw-alias-state-business-primary);
+  background: var(--wf-biz-bg);
+  color: var(--wf-biz-fg);
 }
 
 .wf-status-bad {
-  background: var(--dsw-alias-state-error-secondary);
-  color: var(--dsw-alias-state-error-primary);
+  background: var(--wf-bad-bg);
+  color: var(--wf-bad-fg);
 }
 
 .wf-status-warn {
-  background: var(--dsw-alias-state-warn-tertiary);
-  color: var(--dsw-alias-state-warn-primary);
+  background: var(--wf-warn-bg);
+  color: var(--wf-warn-fg);
 }
 
 .wf-status-idle {
@@ -453,7 +484,7 @@
 }
 
 .wf-section-toggle:hover .wf-section-title {
-  color: var(--dsw-alias-state-business-primary);
+  color: var(--wf-biz-fg);
 }
 
 .wf-caret {
@@ -501,7 +532,7 @@
 }
 
 .wf-block-error .wf-block-title {
-  color: var(--dsw-alias-state-error-primary);
+  color: var(--wf-bad-fg);
 }
 
 .wf-empty-inline {
@@ -514,7 +545,7 @@
   border: none;
   background: transparent;
   padding: 0 2px;
-  color: var(--dsw-alias-state-business-primary);
+  color: var(--wf-biz-fg);
   font: inherit;
   font-size: 10px;
   cursor: pointer;
@@ -603,18 +634,18 @@
 }
 
 .wf-role-user {
-  background: var(--dsw-alias-state-business-tertiary, var(--dsw-alias-interactive-bg-hover));
-  color: var(--dsw-alias-state-business-primary);
+  background: var(--wf-biz-bg);
+  color: var(--wf-biz-fg);
 }
 
 .wf-role-assistant {
-  background: var(--dsw-alias-state-success-tertiary);
-  color: var(--dsw-alias-state-success-primary);
+  background: var(--wf-ok-bg);
+  color: var(--wf-ok-fg);
 }
 
 .wf-role-tool {
-  background: var(--dsw-alias-state-warn-tertiary);
-  color: var(--dsw-alias-state-warn-primary);
+  background: var(--wf-warn-bg);
+  color: var(--wf-warn-fg);
 }
 
 .wf-msg-source {
@@ -780,17 +811,17 @@
 }
 
 .wf-json-string {
-  color: var(--dsw-alias-state-success-primary);
+  color: var(--wf-ok-fg);
   white-space: pre-wrap;
   word-break: break-all;
 }
 
 .wf-json-number {
-  color: var(--dsw-alias-state-business-primary);
+  color: var(--wf-biz-fg);
 }
 
 .wf-json-boolean {
-  color: var(--dsw-alias-state-warn-primary);
+  color: var(--wf-warn-fg);
 }
 
 .wf-json-null {
@@ -801,7 +832,7 @@
   border: none;
   background: transparent;
   padding: 0 4px;
-  color: var(--dsw-alias-state-business-primary);
+  color: var(--wf-biz-fg);
   font: inherit;
   font-size: 10px;
   cursor: pointer;

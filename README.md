@@ -105,6 +105,42 @@ dsh plugin --profile web remove dsh-workflow-view
 
 ---
 
+## 主题与对比度（重要约定）
+
+**不要直接用 `--dsw-alias-state-*-primary` / `-secondary` 配对做「文字 + 背景」。**
+它们不是一对文字/背景色，而是**两个不透明的高饱和色**。在深色主题下：
+
+```
+--dsw-alias-state-error-primary:   rgb(242, 90, 90)
+--dsw-alias-state-error-secondary: rgb(242, 90, 90)   ← 完全相同
+```
+
+所以「primary 文字 + secondary 背景」实测只有 **1.00:1** —— 文字完全看不见（浅色主题也只有 1.37:1）。
+这正是「失败状态与错误信息看不清」的根因。
+
+本插件在 `.wf-root` 派生了一组状态色：文字把色相朝主题自己的 `label-primary` 混合，
+背景把同一色相混进面板底色，因此在明暗两种主题下都稳定通过 WCAG AA：
+
+```css
+--wf-bad-fg: color-mix(in srgb, var(--dsw-alias-state-error-primary) 55%, var(--dsw-alias-label-primary));
+--wf-bad-bg: color-mix(in srgb, var(--dsw-alias-state-error-primary) 14%, var(--dsw-alias-bg-layer-1));
+```
+
+实测结果（`preview/check.mjs` 在真实浏览器里用 canvas 取像素逐项测量）：
+
+| 元素 | 修复前（深色） | 修复后（深色） | 修复后（浅色） |
+| --- | --- | --- | --- |
+| `.wf-status-bad` 失败状态 | **1.00:1** | 6.61:1 | 7.70:1 |
+| `.wf-detail-error` 错误信息 | **1.00:1** | 6.08:1 | 6.96:1 |
+| `.wf-status-ok` / `.wf-role-assistant` | 5.25:1 | 7.50:1 | 5.17:1 |
+| `.wf-status-warn` / `.wf-role-tool` | 8.04:1 | 7.74:1 | 4.97:1 |
+| `.wf-json-string` | 7.55:1 | 10.53:1 | 5.57:1 |
+
+最低一项 4.97:1，全部满足 AA（≥ 4.5:1）。新增或修改任何状态样式后，
+`npm run check:view` 会在明暗两种主题下重新测量，低于 AA 直接失败。
+
+---
+
 ## 数据来源
 
 工作流页面完全由 DeepSeek Harness Session 中**真实记录的事件**生成：
@@ -200,13 +236,17 @@ DSH_WORKFLOW_ESBUILD=/path/to/esbuild/lib/main.js node build.mjs
 ```sh
 npm run typecheck          # tsc --noEmit
 npm run check:projection   # 30 条投影逻辑断言（含实时输出、运行中工具、失败轮次、压缩替换）
-npm run check:view         # 起一个静态预览页 + Chromium，断言布局、虚拟化、横向滚动、区块结构
+npm run check:view         # 起静态预览页 + Chromium：布局、虚拟化、横向滚动、区块结构、明暗双主题对比度
+npm run check              # 以上三项串跑
 npm run preview            # 手动打开预览页 http://127.0.0.1:5199/preview/index.html
 ```
 
-`preview/check.mjs` 会把截图写到 `preview/shot.png`，可用于人工比对。
-`preview/fixtures/events.json` 由两个真实 Session 记录拼成（第二个的 turn 已重编号），
-属于开发夹具，不会随包发布。
+`preview/check.mjs` 会写出明暗两张截图 —— `preview/shot.png` 与 `preview/shot-dark.png`，便于人工比对。
+
+`preview/fixtures/events.json` 由两个真实 Session 记录拼成（第二个的 turn 已重编号）；
+因为真实记录里**没有失败轮次**，`preview/main.tsx` 会再追加一个合成的失败轮次
+——失败状态此前正是因为没有任何夹具覆盖它才漏掉了对比度问题。
+两者都属于开发夹具，不会随包发布。
 
 ---
 

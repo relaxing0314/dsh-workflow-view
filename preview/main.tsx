@@ -14,7 +14,92 @@ import * as JsxRuntime from 'react/jsx-runtime'
 import { apply } from '../src/client/index'
 import { WorkflowView } from '../src/client/WorkflowView'
 import { zh } from '../src/client/locales'
-import events from './fixtures/events.json'
+import fixture from './fixtures/events.json'
+
+/**
+ * The recorded fixtures contain no failed turn, which is exactly why the
+ * low-contrast failure badge shipped: nothing rendered that state. This appends
+ * one synthetic failed round in the same shape the agent loop writes, so the
+ * failed status badge, the error callout, and a failed tool execution are all
+ * on screen for both the layout checks and the contrast measurements.
+ */
+const FAILED_TURN = 3
+// Anchor the synthetic round just after the recorded history so the header's
+// elapsed time stays meaningful instead of spanning a year of clock skew.
+const lastRecordedTime = (fixture as { event?: { time?: number } }[])
+  .reduce((max, entry) => Math.max(max, entry.event?.time ?? 0), 0)
+const T0 = lastRecordedTime + 1000
+const failureEvents = [
+  { type: 'turn/start', seq: 9001, time: T0, data: { turn: FAILED_TURN } },
+  {
+    type: 'request/header',
+    seq: 9002,
+    time: T0 + 1,
+    data: {
+      reason: 'change',
+      header: {
+        config: { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' },
+        system: 'You are an AI agent powered by DeepSeek Harness.',
+        tools: [{ name: 'bash', description: 'Run a shell command', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } }],
+      },
+    },
+  },
+  {
+    type: 'user/message',
+    seq: 9003,
+    time: T0 + 2,
+    surfaceOp: 'append',
+    data: { role: 'user', id: 'u-fail', source: { kind: 'user' }, content: [{ type: 'text', text: '把构建产物发布到线上环境' }] },
+  },
+  { type: 'step/start', seq: 9004, time: T0 + 10, data: { turn: FAILED_TURN, step: 1 } },
+  {
+    type: 'assistant/message',
+    seq: 9005,
+    time: T0 + 420,
+    surfaceOp: 'append',
+    data: {
+      turn: FAILED_TURN,
+      step: 1,
+      message: {
+        role: 'assistant',
+        id: 'a-fail',
+        content: [
+          { type: 'reasoning', text: '需要先确认发布脚本是否存在。' },
+          { type: 'tool-call', id: 'call_fail_1', name: 'bash', arguments: '{"command":"pnpm run deploy --production"}' },
+        ],
+      },
+      usage: { inputTokens: 512, outputTokens: 96, cacheReadTokens: 4096, reasoningTokens: 18 },
+    },
+  },
+  { type: 'tool/call', seq: 9006, time: T0 + 425, data: { turn: FAILED_TURN, step: 1, callId: 'call_fail_1', name: 'bash', arguments: '{"command":"pnpm run deploy --production"}' } },
+  {
+    type: 'tool/result',
+    seq: 9007,
+    time: T0 + 980,
+    surfaceOp: 'append',
+    data: {
+      turn: FAILED_TURN,
+      step: 1,
+      error: { name: 'ShellError', code: 'ENOENT' },
+      message: {
+        source: { kind: 'tool', callId: 'call_fail_1' },
+        content: [{ type: 'tool-result', toolCallId: 'call_fail_1', isError: true, content: [{ type: 'text', text: 'ERR_PNPM_NO_SCRIPT  Missing script: deploy' }] }],
+      },
+    },
+  },
+  { type: 'step/end', seq: 9008, time: T0 + 990, data: { turn: FAILED_TURN, step: 1 } },
+  {
+    type: 'turn/end',
+    seq: 9009,
+    time: T0 + 1000,
+    data: { turn: FAILED_TURN, reason: { kind: 'error', error: { message: 'provider request failed: upstream returned 503 after 3 retries', code: 'UPSTREAM' } } },
+  },
+]
+
+const events = [
+  ...(fixture as { type: string, event: unknown }[]),
+  ...failureEvents.map(event => ({ type: 'event', event })),
+]
 
 const extra = { ...React, ...JsxRuntime }
 
@@ -44,7 +129,7 @@ function translate(key: string, params?: Record<string, string | number>): strin
 
 /** The same window shape the Session binding publishes. */
 const listeners = new Set<() => void>()
-const window = { entries: events, hasMore: false, revision: 1 }
+const window = { entries: events as never, hasMore: false, revision: 1 }
 const source = {
   getSnapshot: () => window,
   subscribe: (listener: () => void) => {
